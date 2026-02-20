@@ -1,15 +1,16 @@
+from dishka import Provider, Scope, provide
 from redis.asyncio import Redis
 
-from app.core.settings.production import ProdAppSettings
-from dishka import Provider, Scope, provide
+from app.core.config import AppSettings
 
 
 class RedisProvider(Provider):
     """Провайдер Redis клиента."""
 
     @provide(scope=Scope.APP)
-    def get_redis(self, settings: ProdAppSettings) -> Redis:
+    def get_redis(self, settings: AppSettings) -> Redis:
         """Создать Redis клиент."""
+        settings = settings.app
         return Redis(
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
