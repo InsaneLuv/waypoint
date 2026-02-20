@@ -1,9 +1,10 @@
 import disnake
+from dishka import FromDishka
+from dishka_disnake.commands import slash_command
 from disnake.ext import commands
-from dishka.integrations.disnake import DishkaAutoInjectMiddleware, FromDishka
 
-from app.services.session_service import SessionService
-from app.models.discord import SessionState
+from app.models.discord import DiscordColor
+from app.services import SessionService
 
 
 class SessionCog(commands.Cog):
@@ -12,62 +13,60 @@ class SessionCog(commands.Cog):
     def __init__(self, bot: commands.InteractionBot):
         self.bot = bot
 
-    @commands.slash_command(name="session_create", description="Создать новую сессию")
-    async def session_create(
-        self,
-        inter: disnake.CommandInteraction,
-        title: str = commands.Param(description="Заголовок сессии", max_length=100),
-        description: str = commands.Param(
-            description="Описание сессии",
-            max_length=1000,
-            default="",
-        ),
-        duration_hours: int = commands.Param(
-            description="Длительность сессии в часах",
-            default=24,
-            min_value=1,
-            max_value=168,
-        ),
-        color: str = commands.Param(
-            description="Цвет сессии в HEX формате (например, #FF5733)",
-            default=None,
-        ),
-        session_service: FromDishka[SessionService] = None,
+    def _build_participants_list(self, participants: list, author_id: int | None = None) -> str:
+        """Сформировать строку со списком участников."""
+        if not participants:
+            return "Нет участников"
+
+        lines = []
+        for p in participants:
+            marker = "👑" if p.user_id == author_id else "•"
+            lines.append(f"{marker} {p.username}")
+        return "\n".join(lines)
+
+    def _build_session_embed(self, session, participants_list: str) -> disnake.Embed:
+        """Создать embed для сессии."""
+        embed = disnake.Embed(
+            title="*Waypoint* сессия",
+            description=session.description,
+            color=int(session.color.as_hex()[1:], 16) if session.color else DiscordColor.random().value,
+        )
+        embed.add_field(
+            name="Участники",
+            value=participants_list,
+            inline=False,
+        )
+        embed.set_footer(text=f"ID: {session.id}")
+        return embed
+
+    @slash_command(name="new", description="Создать новую сессию")
+    async def new(
+            self,
+            inter: disnake.CommandInteraction,
+            session_service: FromDishka[SessionService],
     ):
         """Создать новую сессию."""
         await inter.response.defer()
-
+        title = f"{inter.user.display_name} сессия"
+        description = f"Сессия создана пользователем {inter.user.display_name}"
+        duration_hours = 0
         try:
-            # Парсим цвет если указан
-            parsed_color = None
-            if color:
-                from pydantic_extra_types.color import Color
-                parsed_color = Color(color)
-
             session = await session_service.create_session(
                 title=title,
-                description=description or f"Сессия: {title}",
-                color=parsed_color,
+                description=description,
+                author_id=inter.user.id,
+                author_username=inter.user.display_name,
                 duration_hours=duration_hours,
             )
 
-            embed = disnake.Embed(
-                title="✅ Сессия создана",
-                description=f"**{session.title}**\n{session.description}",
-                color=session.color.as_rgb_tuple(),
+            participants_list = self._build_participants_list(
+                session.participants, session.author_id
             )
-            embed.add_field(name="ID", value=str(session.id), inline=False)
-            embed.add_field(
-                name="Создана",
-                value=session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                inline=True,
+            embed = self._build_session_embed(session, participants_list)
+            embed.set_author(
+                name=inter.user.display_name,
+                icon_url=inter.user.display_avatar.url,
             )
-            embed.add_field(
-                name="Завершится",
-                value=session.ends_at.strftime("%Y-%m-%d %H:%M:%S"),
-                inline=True,
-            )
-
             await inter.edit_original_response(embed=embed)
 
         except Exception as e:
@@ -75,219 +74,83 @@ class SessionCog(commands.Cog):
                 content=f"❌ Ошибка при создании сессии: {str(e)}"
             )
 
-    @commands.slash_command(name="session_get", description="Получить информацию о сессии")
-    async def session_get(
-        self,
-        inter: disnake.CommandInteraction,
-        session_id: str = commands.Param(description="ID сессии"),
-        session_service: FromDishka[SessionService] = None,
+    @slash_command(name="join", description="Войти в сессию")
+    async def join(
+            self,
+            inter: disnake.CommandInteraction,
+            session_id: str,
+            session_service: FromDishka[SessionService],
     ):
-        """Получить информацию о сессии по ID."""
+        """Войти в сессию по ID."""
         await inter.response.defer()
-
         try:
             from uuid import UUID
-            session_uuid = UUID(session_id)
-            session = await session_service.get_session(session_uuid)
-
-            if not session:
-                await inter.edit_original_response(
-                    content="❌ Сессия не найдена"
-                )
-                return
-
-            embed = disnake.Embed(
-                title="📋 Информация о сессии",
-                description=f"**{session.title}**\n{session.description}",
-                color=session.color.as_rgb_tuple(),
-            )
-            embed.add_field(name="ID", value=str(session.id), inline=False)
-            embed.add_field(
-                name="Создана",
-                value=session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                inline=True,
-            )
-            embed.add_field(
-                name="Завершится",
-                value=session.ends_at.strftime("%Y-%m-%d %H:%M:%S"),
-                inline=True,
-            )
-            embed.add_field(
-                name="Состояние",
-                value=str(session.state.name),
-                inline=True,
-            )
-
-            is_active = await session_service.is_session_active(session.id)
-            embed.add_field(
-                name="Активна",
-                value="✅ Да" if is_active else "❌ Нет",
-                inline=True,
-            )
-
-            await inter.edit_original_response(embed=embed)
-
+            uuid = UUID(session_id)
         except ValueError:
             await inter.edit_original_response(
                 content="❌ Неверный формат ID сессии"
             )
-        except Exception as e:
-            await inter.edit_original_response(
-                content=f"❌ Ошибка при получении сессии: {str(e)}"
-            )
-
-    @commands.slash_command(name="session_list", description="Показать все сессии")
-    async def session_list(
-        self,
-        inter: disnake.CommandInteraction,
-        session_service: FromDishka[SessionService] = None,
-    ):
-        """Показать список всех сессий."""
-        await inter.response.defer()
+            return
 
         try:
-            sessions = await session_service.get_all_sessions()
-
-            if not sessions:
-                await inter.edit_original_response(
-                    content="📭 Нет активных сессий"
-                )
-                return
-
-            embed = disnake.Embed(
-                title="📋 Все сессии",
-                description=f"Всего сессий: {len(sessions)}",
-                color=disnake.Color.blue(),
+            session = await session_service.join_session(
+                session_id=uuid,
+                user_id=inter.user.id,
+                username=inter.user.display_name,
             )
 
-            for session in sessions[:10]:  # Показываем максимум 10
-                is_active = await session_service.is_session_active(session.id)
-                status = "🟢" if is_active else "🔴"
-                embed.add_field(
-                    name=f"{status} {session.title}",
-                    value=f"ID: `{session.id}`\nДо: {session.ends_at.strftime('%H:%M %d.%m')}",
-                    inline=False,
-                )
-
-            if len(sessions) > 10:
-                embed.set_footer(text=f"... и ещё {len(sessions) - 10} сессий")
-
-            await inter.edit_original_response(embed=embed)
-
-        except Exception as e:
-            await inter.edit_original_response(
-                content=f"❌ Ошибка при получении списка сессий: {str(e)}"
+            participants_list = self._build_participants_list(
+                session.participants, session.author_id
             )
-
-    @commands.slash_command(name="session_update", description="Обновить сессию")
-    async def session_update(
-        self,
-        inter: disnake.CommandInteraction,
-        session_id: str = commands.Param(description="ID сессии"),
-        title: str = commands.Param(description="Новый заголовок", default=None),
-        description: str = commands.Param(description="Новое описание", default=None),
-        color: str = commands.Param(description="Новый цвет в HEX", default=None),
-        session_service: FromDishka[SessionService] = None,
-    ):
-        """Обновить параметры сессии."""
-        await inter.response.defer()
-
-        try:
-            from uuid import UUID
-            from pydantic_extra_types.color import Color
-
-            session_uuid = UUID(session_id)
-
-            parsed_color = Color(color) if color else None
-
-            session = await session_service.update_session(
-                session_id=session_uuid,
-                title=title,
-                description=description,
-                color=parsed_color,
-            )
-
-            embed = disnake.Embed(
-                title="✅ Сессия обновлена",
-                description=f"**{session.title}**\n{session.description}",
-                color=session.color.as_rgb_tuple(),
-            )
-            embed.add_field(name="ID", value=str(session.id), inline=False)
-
+            embed = self._build_session_embed(session, participants_list)
             await inter.edit_original_response(embed=embed)
 
         except ValueError as e:
             await inter.edit_original_response(
-                content=f"❌ Ошибка: {str(e)}"
+                content=f"❌ Сессия не найдена: {str(e)}"
             )
         except Exception as e:
             await inter.edit_original_response(
-                content=f"❌ Ошибка при обновлении сессии: {str(e)}"
+                content=f"❌ Ошибка при входе в сессию: {str(e)}"
             )
 
-    @commands.slash_command(name="session_delete", description="Удалить сессию")
-    async def session_delete(
-        self,
-        inter: disnake.CommandInteraction,
-        session_id: str = commands.Param(description="ID сессии"),
-        session_service: FromDishka[SessionService] = None,
+    @slash_command(name="leave", description="Выйти из сессии")
+    async def l(
+            self,
+            inter: disnake.CommandInteraction,
+            session_id: str,
+            session_service: FromDishka[SessionService],
     ):
-        """Удалить сессию по ID."""
+        """Выйти из сессии по ID."""
         await inter.response.defer()
-
         try:
             from uuid import UUID
-            session_uuid = UUID(session_id)
-
-            deleted = await session_service.delete_session(session_uuid)
-
-            if deleted:
-                await inter.edit_original_response(
-                    content=f"✅ Сессия `{session_id}` удалена"
-                )
-            else:
-                await inter.edit_original_response(
-                    content="❌ Сессия не найдена"
-                )
-
+            uuid = UUID(session_id)
         except ValueError:
             await inter.edit_original_response(
                 content="❌ Неверный формат ID сессии"
             )
-        except Exception as e:
-            await inter.edit_original_response(
-                content=f"❌ Ошибка при удалении сессии: {str(e)}"
-            )
-
-    @commands.slash_command(
-        name="session_delete_all",
-        description="⚠️ Удалить ВСЕ сессии"
-    )
-    async def session_delete_all(
-        self,
-        inter: disnake.CommandInteraction,
-        confirm: bool = commands.Param(description="Подтвердить удаление", default=False),
-        session_service: FromDishka[SessionService] = None,
-    ):
-        """Удалить все сессии. Требует подтверждения!"""
-        if not confirm:
-            await inter.response.send_message(
-                "⚠️ Используйте `confirm=True` для подтверждения удаления всех сессий",
-                ephemeral=True,
-            )
             return
 
-        await inter.response.defer()
-
         try:
-            count = await session_service.delete_all_sessions()
-            await inter.edit_original_response(
-                content=f"✅ Удалено сессий: {count}"
+            session = await session_service.leave_session(
+                session_id=uuid,
+                user_id=inter.user.id,
             )
 
+            participants_list = self._build_participants_list(
+                session.participants, session.author_id
+            )
+            embed = self._build_session_embed(session, participants_list)
+            await inter.edit_original_response(embed=embed)
+
+        except ValueError as e:
+            await inter.edit_original_response(
+                content=f"❌ Сессия не найдена: {str(e)}"
+            )
         except Exception as e:
             await inter.edit_original_response(
-                content=f"❌ Ошибка при удалении сессий: {str(e)}"
+                content=f"❌ Ошибка при выходе из сессии: {str(e)}"
             )
 
 
