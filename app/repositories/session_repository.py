@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from app.models.discord import Session
+from app.models.discord import Session, SessionParticipant
 
 
 class SessionRepository(ABC):
@@ -39,4 +39,22 @@ class SessionRepository(ABC):
     @abstractmethod
     async def delete_all(self) -> int:
         """Удалить все сессии. Возвращает количество удалённых."""
+        pass
+
+    @abstractmethod
+    async def add_participant(
+        self,
+        session_id: UUID,
+        participant: SessionParticipant,
+    ) -> Session:
+        """Добавить участника в сессию."""
+        pass
+
+    @abstractmethod
+    async def remove_participant(
+        self,
+        session_id: UUID,
+        user_id: int,
+    ) -> Session:
+        """Удалить участника из сессии."""
         pass
