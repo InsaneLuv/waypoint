@@ -4,7 +4,7 @@ from uuid import UUID
 
 from redis.asyncio import Redis
 
-from app.models.discord import Session
+from app.models.discord import Session, SessionParticipant
 from app.repositories.session_repository import SessionRepository
 
 
@@ -25,8 +25,28 @@ class RedisSessionRepository(SessionRepository):
         """Сформировать ключ для сессии в Redis."""
         return f"{self.KEY_PREFIX}{session_id}"
 
+    def _serialize_participant(self, participant: SessionParticipant) -> str:
+        """Сериализовать участника в JSON."""
+        return json.dumps({
+            "user_id": participant.user_id,
+            "username": participant.username,
+            "joined_at": participant.joined_at.isoformat(),
+        })
+
+    def _deserialize_participant(self, data: str) -> SessionParticipant:
+        """Десериализовать участника из JSON."""
+        parsed = json.loads(data)
+        return SessionParticipant(
+            user_id=parsed["user_id"],
+            username=parsed["username"],
+            joined_at=datetime.fromisoformat(parsed["joined_at"]),
+        )
+
     def _serialize_session(self, session: Session) -> dict:
         """Сериализовать сессию для хранения в Redis."""
+        participants_data = [
+            self._serialize_participant(p) for p in session.participants
+        ]
         return {
             "id": str(session.id),
             "title": session.title,
@@ -35,10 +55,23 @@ class RedisSessionRepository(SessionRepository):
             "created_at": session.created_at.isoformat(),
             "ends_at": session.ends_at.isoformat(),
             "state": session.state.value,
+            "author_id": str(session.author_id) if session.author_id else None,
+            "participants": json.dumps(participants_data),
         }
 
     def _deserialize_session(self, data: dict) -> Session:
         """Десериализовать данные из Redis в сессию."""
+        participants = []
+        participants_raw = data.get("participants")
+        if participants_raw:
+            participants_list = json.loads(participants_raw)
+            participants = [
+                self._deserialize_participant(p) for p in participants_list
+            ]
+
+        author_id_str = data.get("author_id")
+        author_id = int(author_id_str) if author_id_str else None
+
         return Session(
             id=UUID(data["id"]),
             title=data["title"],
@@ -47,6 +80,8 @@ class RedisSessionRepository(SessionRepository):
             created_at=datetime.fromisoformat(data["created_at"]),
             ends_at=datetime.fromisoformat(data["ends_at"]),
             state=int(data.get("state", 0)),
+            author_id=author_id,
+            participants=participants,
         )
 
     async def create(self, session: Session) -> Session:
@@ -99,3 +134,36 @@ class RedisSessionRepository(SessionRepository):
         deleted = await self.redis.delete(*keys)
         await self.redis.delete(self.ALL_SESSIONS_KEY)
         return deleted
+
+    async def add_participant(
+        self,
+        session_id: UUID,
+        participant: SessionParticipant,
+    ) -> Session:
+        """Добавить участника в сессию."""
+        session = await self.get_by_id(session_id)
+        if not session:
+            raise ValueError(f"Session with id {session_id} not found")
+
+        # Проверяем, нет ли уже такого участника
+        for p in session.participants:
+            if p.user_id == participant.user_id:
+                return session  # Уже есть, ничего не делаем
+
+        session.participants.append(participant)
+        return await self.update(session)
+
+    async def remove_participant(
+        self,
+        session_id: UUID,
+        user_id: int,
+    ) -> Session:
+        """Удалить участника из сессии."""
+        session = await self.get_by_id(session_id)
+        if not session:
+            raise ValueError(f"Session with id {session_id} not found")
+
+        session.participants = [
+            p for p in session.participants if p.user_id != user_id
+        ]
+        return await self.update(session)
