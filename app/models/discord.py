@@ -27,10 +27,46 @@ class DiscordColor:
 
     @classmethod
     def random_hex(cls) -> str:
-        return random.choice(cls.COLORS)
+        c = random.choice(cls.COLORS)
+        return hex(c)
+
 
 class SessionState(enum.IntEnum):
     undefined = 0
+
+
+class SessionParticipant(BaseModel):
+    """Участник сессии."""
+    user_id: int
+    username: str
+    joined_at: datetime
+
+
+class SwitchPolicy(BaseModel):
+    guest_can_switch_point: bool = Field(default=False, description="Может ли участник переключать точки")
+    guest_can_switch_stack: bool = Field(default=False, description="Может ли участник переключать стеки с точками")
+
+
+class SessionPolicy(BaseModel):
+    free_session: bool = Field(default=True, description="Подключение без приглашения")
+    guest_can_invite: bool = Field(default=False, description="Может ли участник приглашать гостей")
+
+
+class ExternalSettings(BaseModel):
+    enabled: bool = Field(default=True, description="Переключение внешними инструментами")
+
+    switch_point_next_webhook: str | None = Field(default=None)
+    switch_point_prev_webhook: str | None = Field(default=None)
+
+    switch_stack_next_webhook: str | None = Field(default=None)
+    switch_stack_prev_webhook: str | None = Field(default=None)
+
+
+class SessionSettings(BaseModel):
+    switch_policy: SwitchPolicy
+    session_policy: SessionPolicy
+    external_policy: ExternalSettings
+
 
 class Session(BaseModel):
     id: UUID
@@ -40,3 +76,5 @@ class Session(BaseModel):
     created_at: datetime
     ends_at: datetime
     state: SessionState
+    author_id: int | None = None
+    participants: list[SessionParticipant] = Field(default_factory=list)
