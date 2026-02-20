@@ -1,9 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from uuid import UUID, uuid4
 
 from pydantic_extra_types.color import Color
 
-from app.models.discord import DiscordColor, Session, SessionState
+from app.models.discord import DiscordColor, Session, SessionParticipant, SessionState
 from app.repositories.session_repository import SessionRepository
 
 
@@ -23,6 +23,8 @@ class SessionService:
         self,
         title: str,
         description: str,
+        author_id: int,
+        author_username: str,
         color: Color | None = None,
         duration_hours: int | None = None,
     ) -> Session:
@@ -31,6 +33,8 @@ class SessionService:
         Args:
             title: Заголовок сессии
             description: Описание сессии
+            author_id: ID автора сессии
+            author_username: Имя автора сессии
             color: Цвет сессии (если не указан, выбирается случайный)
             duration_hours: Длительность сессии в часах
 
@@ -40,7 +44,12 @@ class SessionService:
         if duration_hours is None:
             duration_hours = self.DEFAULT_SESSION_DURATION_HOURS
 
-        now = datetime.utcnow()
+        now = datetime.now(tz=UTC)
+        author = SessionParticipant(
+            user_id=author_id,
+            username=author_username,
+            joined_at=now,
+        )
         session = Session(
             id=uuid4(),
             title=title,
@@ -49,6 +58,8 @@ class SessionService:
             created_at=now,
             ends_at=now + timedelta(hours=duration_hours),
             state=SessionState.undefined,
+            author_id=author_id,
+            participants=[author],
         )
         return await self.repository.create(session)
 
@@ -120,3 +131,53 @@ class SessionService:
         if not session:
             return False
         return datetime.utcnow() < session.ends_at
+
+    async def join_session(
+        self,
+        session_id: UUID,
+        user_id: int,
+        username: str,
+    ) -> Session:
+        """Добавить участника в сессию.
+
+        Args:
+            session_id: ID сессии
+            user_id: ID пользователя
+            username: Имя пользователя
+
+        Returns:
+            Обновлённую сессию
+
+        Raises:
+            ValueError: Если сессия не найдена
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session with id {session_id} not found")
+
+        now = datetime.now(tz=UTC)
+        participant = SessionParticipant(
+            user_id=user_id,
+            username=username,
+            joined_at=now,
+        )
+        return await self.repository.add_participant(session_id, participant)
+
+    async def leave_session(
+        self,
+        session_id: UUID,
+        user_id: int,
+    ) -> Session:
+        """Удалить участника из сессии.
+
+        Args:
+            session_id: ID сессии
+            user_id: ID пользователя
+
+        Returns:
+            Обновлённую сессию
+
+        Raises:
+            ValueError: Если сессия не найдена
+        """
+        return await self.repository.remove_participant(session_id, user_id)
